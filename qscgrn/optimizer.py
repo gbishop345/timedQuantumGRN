@@ -230,10 +230,18 @@ class model(quantum_circuit):
                         * (N_out / self.h_N_out)
                     self.gradient[(gene, gene)] = np.sum(der_loss) + der_const[(gene, gene)]
 
+            # for idx, edge in enumerate(self.edges):
+            #     edge_sym = (edge[1], edge[0])
+            #     tmp_deriv = (dv.loc[edge] + dv.loc[edge_sym]) / 2
+            #     der_state = tmp_deriv.to_numpy().reshape(2**self.ngenes, 1)
+            #     der_loss = (1 + log) * 2 * v * der_state \
+            #         * (N_out / self.h_N_out)
+            #     self.gradient[edge] = np.sum(der_loss) + der_const[edge]
             for idx, edge in enumerate(self.edges):
-                edge_sym = (edge[1], edge[0])
-                tmp_deriv = (dv.loc[edge] + dv.loc[edge_sym]) / 2
+                # 直接使用單向的梯度，創造真正的因果有向圖 (Directed Graph)
+                tmp_deriv = dv.loc[edge]
                 der_state = tmp_deriv.to_numpy().reshape(2**self.ngenes, 1)
+                
                 der_loss = (1 + log) * 2 * v * der_state \
                     * (N_out / self.h_N_out)
                 self.gradient[edge] = np.sum(der_loss) + der_const[edge]
