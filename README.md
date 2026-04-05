@@ -1,55 +1,43 @@
-# QuantumGRN
-A quantum circuit model for inferring gene regulatory networks with application to single-cell transcriptomic data. Reference in the [manuscript](https://www.nature.com/articles/s41534-023-00740-6).
+# timedQuantumGRN
 
-we introduce a quantum circuit model for inferring gene regulatory networks (GRNs) from single-cell transcriptomic data. The model employs qubit entanglement to simulate interactions between genes, resulting in competitive performance and promising potential for further exploration. We applied our quantum GRN modeling approach to single-cell transcriptomic data from human lymphoblastoid cells, focusing on a small set of genes involved in innate immunity regulation. Our quantum circuit model successfully predicted the presence and absence of regulatory interactions between genes, while also estimating the strength of these interactions. We argue that the application of quantum computing in biology has the potential to provide a better understanding of single-cell GRNs by more effectively approaching the relationship between fully interconnected genes compared to conventional statistical methods such as correlation and regression. Our results encourage further investigation into the creation of quantum algorithms that utilize single-cell data, paving the way for future research into the intersection of quantum computing and biology.
+This repository is a modified and extended version of the original [QuantumGRN](https://github.com/cailab-tamu/QuantumGRN) project. It is specifically tailored for **Time-Series Single-Cell RNA (scRNA-seq) data**, enabling the discovery of **directed, causal regulatory relationships** across sequential developmental stages.
 
-## Installation (test Pypi)
-Set a python environment to install our QuantumGRN. I.e. using conda. Python 3.9 is required to use our package.
-```bash
-conda create -n myqgrn python=3.9
-conda activate myqgrn
-```
+## 🚀 Key Modifications & Enhancements
 
-Use the package manage [pip](https://pip.pypa.io/en/stable/) to install QuantumGRN
-```bash
-pip install --index-url https://test.pypi.org/simple/ --extra-index-url https://pypi.org/simple QuantumGRN
-```
+This fork introduces several critical changes to transition the original model from capturing undirected correlations to inferring **directed causal networks (DAGs)**.
 
-## Run example
-Run the examples file using QuantumGRN package
-```bash
-cd test
-python 02_example.py
-```
+### 1. Core Algorithmic Change: Directed Causal Weights
+* **File Modified:** `qscgrn/optimizer.py`
+* **Details:** In the original QuantumGRN, the gradient descent mechanism averaged the symmetric edges (`u -> v` and `v -> u`) to enforce an undirected graph. We removed this symmetric constraint in the `compute_gradient` function. The model now calculates independent directional weights, allowing $t_0$ genes to strictly drive $t_1$ genes without forced reciprocity.
 
-## Usage
-QuantumGRN is used as normal package,
-```python
-import numpy as numpy
-import pandas as pd
-from qscgrn import *
+### 2. Time-Asymmetric Training Initialization
+* **Details:** We explicitly set `train_encoder=False` during the model training phase. This freezes the basal state (the starting time point, e.g., $0h$) and ensures the optimization strictly targets the transition probability to the next state ($1h$). This prevents the model from altering historical states to fit future data.
 
-df = pd.read_csv("dataset/expr_matrix_pearsonresidual_7.txt", delimiter='\t')
-df = df.set_index('genes').T
+### 3. Matrix Dimension Fixes
+* **Details:** Fixed a critical tensor dimension error (Maximum allowed dimension exceeded) by correcting the matrix shape handling during Pandas extraction. Removed `.T` transpositions to properly pass `(cells, genes)` shaped tensors into the quantum state simulator, allowing it to scale efficiently.
 
-ncells, ngenes = df.shape
-df = qsc_order_gene(df)
-genes = df.columns.to_list()
-p_obs = qsc_distribution(df)
-activation = qsc_activation_ratios(df)
+### 4. Advanced Directed Visualization
+* **Details:** Replaced the default undirected visualizer with a custom `networkx`-based DAG visualizer. 
+  * Explicit directional arrows (`-|>` ) are now rendered (resolving node overlap issues).
+  * Green edges denote positive regulation; Red edges denote negative regulation.
+  * Edge thickness linearly correlates with the absolute weight of the optimized interaction.
 
-theta = theta_init(genes, activation_ratios=activation)
-edges = edges_init(genes)
-qgrn = model(ncells, genes, theta, edges, p_obs)
-qgrn.train()
+### 5. Automated Time-Course Pipeline
+* **Files Added:** `test/run_timecourse_qgrn.py` & `test/run_causal_qgrn.py`
+* **Details:** Built an automated pipeline to iterate through the Kouno (2013) macrophage differentiation dataset checkpoints: `0h -> 1h -> 6h -> 12h -> 24h -> 48h -> 72h -> 96h`. It automatically generates temporal network SVGs and weight CSVs into a `results_timecourse/` directory.
 
-draw_network(genes, edges, qgrn.theta, filename="qgrn_network.png")
-```
+## 📁 Project Structure Additions
 
-More detailed code in the tutorials directory
+* `dataset/rna.csv`: The target time-series scRNA-seq dataset.
+* `test/run_causal_qgrn.py`: Script for single-step transition analysis (e.g., 0h to 1h).
+* `test/run_timecourse_qgrn.py`: Batch execution script for complete multi-stage time-series analysis.
+* `quantumGRN_Install.sh`: Updated installation script pointing to this specific fork with corrected directory mappings.
 
-## Contributing
-Pull requests are welcome.
+## 💻 How to Run
 
-## License
-[MIT](https://choosealicense.com/licenses/mit/)
+1. Clone this repository and complete the installation via `quantumGRN_Install.sh`.
+2. Ensure your data is located at `dataset/rna.csv` with a time column named `h`.
+3. To run the full dynamic evolution pipeline, execute:
+   ```bash
+   cd test
+   python run_timecourse_qgrn.py
