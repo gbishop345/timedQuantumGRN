@@ -34,6 +34,7 @@ INSTALL_REQUIRES = [
         "igraph~=0.9.11",
         "kiwisolver~=1.4.3",
         "matplotlib~=3.5.2",
+        "networkx~=2.8",
         "mpmath~=1.2.1",
         "ntlm-auth~=1.5.0",
         "numpy~=1.23.0",

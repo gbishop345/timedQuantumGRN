@@ -6,6 +6,12 @@ from .utils import Progbar, info_print
 
 __all__ = ["model"]
 
+# Fixed L1 weight on regulation (off-diagonal) θ; paired with proximal
+# soft-threshold after each gradient step (ISTA). Per-step shrink is lr * λ
+# (default lr=0.1); larger λ zeros weak edges more aggressively.
+# Too high drives all regulation edges to ~0; tune with data.
+REGULATION_L1_WEIGHT = 0.035
+
 
 def _loss_function(p_out, p_obs, method="kl-divergence"):
     if method == "kl-divergence":
@@ -24,6 +30,25 @@ def _loss_function(p_out, p_obs, method="kl-divergence"):
 def _loss_constraint(theta, ratio=1):
     func = ratio / np.power(theta**4 - (np.pi/2)**4, 2)
     return np.sum(func)
+
+
+def _lasso_penalty(theta, edges):
+    """L1 on regulation edges only (encoder diagonals excluded)."""
+    return float(
+        REGULATION_L1_WEIGHT * sum(abs(theta.loc[e]) for e in edges)
+    )
+
+
+def _prox_l1_regulation_edges(theta, edges, step_size):
+    """
+    Proximal step for λ||θ||_1 on regulation edges (ISTA soft-threshold).
+    θ_e ← sign(θ_e) max(0, |θ_e| - ηλ) for each edge e; encoder entries untouched.
+    """
+    thresh = step_size * REGULATION_L1_WEIGHT
+    for e in edges:
+        t = float(theta.loc[e])
+        theta.loc[e] = float(np.sign(t) * max(0.0, abs(t) - thresh))
+
 
 def _compute_error(p_out, p_obs):
     err = np.power(p_out - p_obs, 2)
@@ -69,6 +94,8 @@ class model(quantum_circuit):
         Array to save the loss function values accross training.
     error : np.array
         Array to save the error values across training.
+    lasso_term : np.array
+        Regulation-edge L1 penalty λ‖θ‖_1 each epoch (fixed λ in module).
     gradient : pd.Dataframe
         Dataframe for saving the gradient of the loss function with
         respect of the parameters in the quantum circuit.
@@ -136,13 +163,14 @@ class model(quantum_circuit):
         self.ncells = ncells
         self.p_obs = p_obs.reshape(2**self.ngenes, 1)
         self.epochs = epochs
-        self.lr = learning_rate,
+        self.lr = learning_rate
         self.method= method
         self.train_encoder = train_encoder
         self.save_theta = save_theta
         self.loss = np.zeros(shape=(self.epochs,))
         self.error = np.zeros(shape=(self.epochs,))
         self.cons = np.zeros(shape=(self.epochs,))
+        self.lasso_term = np.zeros(shape=(self.epochs,))
         self.loss_threshold = 1e-16
         self.loss_ratio = 1
 
@@ -278,11 +306,13 @@ class model(quantum_circuit):
             self.loss_ratio = loss / _loss_constraint(self.theta, ratio=1)
             self.compute_gradient(ratio=self.loss_ratio)
             cons = _loss_constraint(self.theta, ratio=self.loss_ratio)
-            total_loss = loss + cons
+            lasso = _lasso_penalty(self.theta, self.edges)
+            total_loss = loss + cons + lasso
             error = _compute_error(self.p_out, self.p_obs)
             self.loss[epoch] = loss
             self.error[epoch] = error
             self.cons[epoch] = cons
+            self.lasso_term[epoch] = lasso
 
             if epoch >= window+1:
                 iloss = np.mean(self.loss[epoch-(window-1): epoch+1])
@@ -298,6 +328,7 @@ class model(quantum_circuit):
                 self.loss = self.loss[:epoch+1]
                 self.error = self.error[:epoch+1]
                 self.cons = self.cons[:epoch+1]
+                self.lasso_term = self.lasso_term[:epoch+1]
 
                 if self.save_theta:
                     self.training_theta = np.array(training_theta)
@@ -313,6 +344,7 @@ class model(quantum_circuit):
 
             progbar.update(epoch+1)
             self.theta = self.theta - self.lr * self.gradient
+            _prox_l1_regulation_edges(self.theta, self.edges, self.lr)
             self.generate_circuit()
 
     def export_training_theta(self, filename, sample=5):

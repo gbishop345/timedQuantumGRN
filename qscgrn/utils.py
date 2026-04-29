@@ -1,12 +1,96 @@
 import os
 import sys
 import time
+from typing import Union
+
 import numpy as np
 import pandas as pd
 
 
-__all__ = ['qsc_order_gene', 'qsc_distribution',
-           'qsc_activation_ratios']
+__all__ = [
+    'qsc_order_gene',
+    'qsc_distribution',
+    'qsc_activation_ratios',
+    'per_gene_threshold_row',
+    'ThresholdSpec',
+    'GRN_EDGE_DISPLAY_THRESHOLD_RAD',
+]
+
+
+ThresholdSpec = Union[float, int, str, np.ndarray, pd.Series]
+
+# Regulation |θ| (radians) at or below this is omitted from network plots and
+# stability “edge present” counts; increase to declutter weak interactions.
+GRN_EDGE_DISPLAY_THRESHOLD_RAD = 0.045
+
+
+def per_gene_threshold_row(dataframe: pd.DataFrame, threshold: ThresholdSpec) -> np.ndarray:
+    """
+    Per-gene thresholds aligned to ``dataframe.columns``, shape ``(1, ngenes)``.
+
+    Parameters
+    ----------
+    dataframe : pd.DataFrame
+        Rows = cells, columns = genes (no extra columns).
+    threshold :
+        - **float / int**: same cutoff for every gene (current behavior).
+        - **``\"median\"`` / ``\"mean\"``**: computed **within this dataframe**
+          along cells (column-wise).
+        - **ndarray** length ``ngenes``: explicit cutoff per column order.
+        - **pd.Series**: index = gene names; must cover all columns.
+
+    Returns
+    -------
+    ndarray
+        Shape ``(1, ngenes)`` for broadcasting against ``dataframe.values``.
+
+    Notes
+    -----
+    For highly skewed counts, transform values first (e.g. ``np.log1p`` on the
+    matrix) so median/mean sit on a scale where cells are less degenerate; this
+    function does not log-transform by itself.
+    """
+    if not isinstance(dataframe, pd.DataFrame):
+        raise ValueError("dataframe must be a pd.DataFrame")
+    cols = list(dataframe.columns)
+    ngenes = len(cols)
+    if ngenes == 0:
+        raise ValueError("dataframe has no columns")
+
+    if isinstance(threshold, str):
+        key = threshold.strip().lower()
+        if key not in ("median", "mean"):
+            raise ValueError(
+                'String threshold must be "median" or "mean", '
+                f"got {threshold!r}"
+            )
+        mat = dataframe.to_numpy(dtype=float)
+        if key == "median":
+            t = np.nanmedian(mat, axis=0)
+        else:
+            t = np.nanmean(mat, axis=0)
+        return t.reshape(1, -1)
+
+    if isinstance(threshold, (int, float, np.floating)):
+        return np.full((1, ngenes), float(threshold), dtype=float)
+
+    if isinstance(threshold, np.ndarray):
+        arr = np.asarray(threshold, dtype=float).reshape(-1)
+        if arr.size != ngenes:
+            raise ValueError(
+                f"threshold array length {arr.size} != ngenes {ngenes}"
+            )
+        return arr.reshape(1, -1)
+
+    if isinstance(threshold, pd.Series):
+        missing = [c for c in cols if c not in threshold.index]
+        if missing:
+            raise ValueError(f"threshold Series missing genes: {missing}")
+        return np.array([float(threshold[c]) for c in cols], dtype=float).reshape(
+            1, -1
+        )
+
+    raise TypeError(f"Unsupported threshold type: {type(threshold)}")
 
 
 def _qsc_probabilities(ngenes, labels, counts, drop_zero=True):
@@ -43,7 +127,7 @@ def _qsc_probabilities(ngenes, labels, counts, drop_zero=True):
     return probabilities / np.sum(probabilities)
 
 
-def qsc_distribution(dataframe, threshold=0, drop_zero=True):
+def qsc_distribution(dataframe, threshold: ThresholdSpec = 0, drop_zero=True):
     """
     Compute the observed distribution for the binarization step for the dataset
     using the threshold values as described in the manuscript.
@@ -52,8 +136,10 @@ def qsc_distribution(dataframe, threshold=0, drop_zero=True):
     dataframe : pd.DataFrame
         The dataset as DataFrame object where the columns are genes and
         rows are cells.
-    threshold : float
-        The threshold value for the binarization.
+    threshold : float, str, ndarray, or Series
+        Binarization cutoff per gene. Use a scalar for one global cutoff,
+        ``\"median\"`` or ``\"mean\"`` for per-gene values computed on this
+        dataframe, or a length-``ngenes`` array / Series indexed by gene name.
         Default: 0
     drop_zero : bool
         Flag to normalize the distributions. It set the `|0>_n` state to 0 and
@@ -72,10 +158,11 @@ def qsc_distribution(dataframe, threshold=0, drop_zero=True):
         raise ValueError("The dataset parameter is not a pd.DataFrame "
                          "object")
 
-    scdata = dataframe.to_numpy().T
+    scdata = dataframe.to_numpy(dtype=float).T
     ngenes, _ = scdata.shape
+    trow = per_gene_threshold_row(dataframe, threshold).reshape(-1, 1)
 
-    labels, counts = np.unique((scdata > threshold) + 0, axis=1, \
+    labels, counts = np.unique((scdata > trow) + 0, axis=1, \
                                return_counts=True)
     labels = np.flip(labels, axis=0).T
     prob = _qsc_probabilities(ngenes, labels, counts, drop_zero)
@@ -83,7 +170,7 @@ def qsc_distribution(dataframe, threshold=0, drop_zero=True):
     return prob
 
 
-def qsc_order_gene(dataframe, threshold=0):
+def qsc_order_gene(dataframe, threshold: ThresholdSpec = 0):
     """
     Order the dataset according to the expression level of each gene from
     largest to smallest.
@@ -92,13 +179,12 @@ def qsc_order_gene(dataframe, threshold=0):
     dataframe : pd.DataFrame
         The dataset as DataFrame object where the columns are genes and
         rows are cells.
-    threshold : float
-        The threshold value for the binarization.
-        Default: 0
+    threshold : float, str, ndarray, or Series
+        Same convention as :func:`per_gene_threshold_row`. Default: 0
     Returns
     -------
     dataframe : pd.DataFrame
-        The ordered dataset as DataFrame object
+        Columns reordered by descending activation count.
     Raises
     ------
     ValueError
@@ -107,14 +193,19 @@ def qsc_order_gene(dataframe, threshold=0):
     if not isinstance(dataframe, pd.DataFrame):
         raise ValueError("The dataset parameter is not a pd.DataFrame "
                          "object")
-    mask = dataframe > threshold
+    trow = per_gene_threshold_row(dataframe, threshold)
+    mask = pd.DataFrame(
+        dataframe.to_numpy(dtype=float) > trow,
+        index=dataframe.index,
+        columns=dataframe.columns,
+    )
     counts = mask.sum(axis=0).sort_values(ascending=False)
     ordered_genes = counts.index.to_list()
     info_print("The dataframe genes are ordered")
     return dataframe[ordered_genes]
 
 
-def qsc_activation_ratios(dataframe, threshold=0):
+def qsc_activation_ratios(dataframe, threshold: ThresholdSpec = 0):
     """
     Compute the activation ratios for each gene in the ordered dataset.
     Parameters
@@ -122,13 +213,13 @@ def qsc_activation_ratios(dataframe, threshold=0):
     dataframe : pd.DataFrame
         The dataset as DataFrame object where the columns are genes and
         rows are cells.
-    threshold : float
-        The threshold value for the binarization.
+    threshold : float, str, ndarray, or Series
+        Same convention as :func:`qsc_distribution` / :func:`per_gene_threshold_row`.
         Default: 0
     Returns
     -------
-    dataframe : pd.DataFrame
-        The ordered dataset as DataFrame object
+    ndarray
+        Length ``ngenes``, fraction of cells with expression above cutoff.
     Raises
     ------
     ValueError
@@ -137,10 +228,11 @@ def qsc_activation_ratios(dataframe, threshold=0):
     if not isinstance(dataframe, pd.DataFrame):
         raise ValueError("The dataset parameter is not a pd.DataFrame "
                          "object")
-    scdata = dataframe.to_numpy().T
+    scdata = dataframe.to_numpy(dtype=float).T
     _, ncells = scdata.shape
+    trow = per_gene_threshold_row(dataframe, threshold).reshape(-1, 1)
     info_print("Activation ratios are computed")
-    return np.sum((scdata > threshold) + 0, axis=1) / ncells
+    return np.sum((scdata > trow) + 0, axis=1) / ncells
 
 
 def _qsc_labels(ngenes):

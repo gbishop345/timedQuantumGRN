@@ -1,8 +1,4 @@
-import os
-import sys
 import numpy as np
-import igraph as ig
-from ..qcircuit.utils import edges_to_index
 from ..utils import info_print
 
 
@@ -20,6 +16,9 @@ def _coordinates_graph(ngenes):
 def draw_network(genes, edges, theta, threshold=1, filename=None):
     """
     Draw the network representation of the QuantumGRN model.
+
+    Uses NetworkX and Matplotlib (no igraph / Cairo).
+
     Parameters
     ----------
     genes : list
@@ -30,48 +29,64 @@ def draw_network(genes, edges, theta, threshold=1, filename=None):
         The theta values in the QuantumGRN model.
     threshold : float
         The threshold for dropping edges from the network. Details in the
-        manuscript
-    filaname : str
-        The file name to export th eimage. It should have te file extension.
+        manuscript.
+    filename : str or None
+        Path to export the figure (e.g. ``.png`` or ``.svg``). If None, the
+        figure is shown with ``plt.show()``.
     """
+    import matplotlib.pyplot as plt
+    import networkx as nx
+
     info_msg = " and exporting to {file} file.".format(file=filename) \
         if filename is not None else ""
     info_print("Drawing the network representation of the qscGRN model{msg}"
-                 .format(msg=info_msg))
+               .format(msg=info_msg))
 
-    idx = edges_to_index(genes, edges)
+    theta_e = theta[edges]
+    theta_e = theta_e[np.abs(theta_e) > (threshold * np.pi / 180)]
+    filtered_edges = theta_e.index.to_list()
+
     x, y = _coordinates_graph(len(genes))
-    theta = theta[edges]
+    pos = {g: (float(x[i]), float(y[i])) for i, g in enumerate(genes)}
 
-    theta = theta[np.abs(theta) > (threshold * np.pi / 180)]
-    edges = theta.index.to_list()
-    idx = edges_to_index(genes, edges)
+    G = nx.DiGraph()
+    G.add_nodes_from(genes)
+    for edge in filtered_edges:
+        w = float(theta_e[edge])
+        width = max(0.4, 30.0 * abs(w) / np.pi / 6.0)
+        color = "#70AD47" if w >= 0 else "#FF0000"
+        G.add_edge(edge[0], edge[1], weight=w, color=color, width=width)
 
-    weigth = 30 * np.abs(theta) / np.pi
-    es_color = ["#70AD47" if value >= 0 else "#FF0000" for value in theta]
-    vs_color = "#DAE3F3"
-
-    net = ig.Graph(
-        n=len(genes), edges=idx,
-        edge_attrs={"weigth": weigth, "color": es_color, "curved": 0.0},
-        vertex_attrs={"label": genes, "color": vs_color},
-        directed=False
+    plt.figure(figsize=(6.5, 6.5))
+    nx.draw_networkx_nodes(
+        G,
+        pos,
+        node_size=1800,
+        node_color="#DAE3F3",
+        edgecolors="#2F528F",
+        linewidths=2,
     )
-
-    net.vs["vertex_frame"] = "#2F528F"
-    net.vs["vertex_size"] = 50
-    net.vs["label_size"] = 14
-    net.vs["x"] = x
-    net.vs["y"] = y
-
-    visual_style = {}
-    visual_style["edge_width"] = net.es["weigth"]
-    visual_style["vertex_size"] = net.vs["vertex_size"]
-    visual_style["vertex_frame_color"] = net.vs["vertex_frame"]
-    visual_style["vertex_shape"] = "circle"
-    visual_style["bbox"] = (400, 400)
-    visual_style["margin"] = 50
-
-    ig.plot(net, filename, **visual_style)
-
-
+    nx.draw_networkx_labels(G, pos, font_size=11, font_weight="bold")
+    edgelist = list(G.edges(data=True))
+    if edgelist:
+        nx.draw_networkx_edges(
+            G,
+            pos,
+            edgelist=edgelist,
+            edge_color=[d["color"] for _, _, d in edgelist],
+            width=[d["width"] for _, _, d in edgelist],
+            arrows=True,
+            arrowstyle="-|>",
+            arrowsize=18,
+            node_size=1800,
+            connectionstyle="arc3,rad=0.12",
+            min_source_margin=18,
+            min_target_margin=22,
+        )
+    plt.axis("off")
+    plt.tight_layout()
+    if filename is not None:
+        plt.savefig(filename, bbox_inches="tight")
+    else:
+        plt.show()
+    plt.close()
